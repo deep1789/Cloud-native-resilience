@@ -8,6 +8,7 @@ from arcsim.sim import Fault, AVAIL_SLO, DT
 SEEDS = int(sys.argv[1]) if len(sys.argv) > 1 else 12
 S0 = int(sys.argv[2]) if len(sys.argv) > 2 else 100   # evaluation seeds start at 100 (development used 0-19)
 CTRL = ["HPA", "HPA-fast", "HPA-45", "PredHPA", "ARC-noChaos", "ARC"]
+STATIONARY = len(sys.argv) > 3 and sys.argv[3] == "stationary"
 EPOCH = 360   # ticks (30 min)
 N_EP = 12
 I = T.IDX
@@ -16,7 +17,11 @@ I = T.IDX
 def job(a):
     c, s = a
     rng = np.random.default_rng(10_000 + s)
-    base = W.window(s % len(W.WINDOWS), minutes=N_EP * 30)
+    if STATIONARY:   # identical 30-min load shape every epoch: isolates learning from workload drift
+        one = W.window(s % len(W.WINDOWS), minutes=30)
+        base = np.tile(one, N_EP)
+    else:
+        base = W.window(s % len(W.WINDOWS), minutes=N_EP * 30)
     load = base * np.exp(rng.normal(0, 0.03, len(base)))
     faults = []
     for e in range(N_EP):
@@ -42,5 +47,5 @@ def job(a):
 if __name__ == "__main__":
     t0 = time.time()
     out = [r for rows in pmap(job, [(c, s) for c in CTRL for s in range(S0, S0 + SEEDS)]) for r in rows]
-    pd.DataFrame(out).to_csv(f"{RES}/antifragile.csv", index=False)
+    pd.DataFrame(out).to_csv(f"{RES}/antifragile{'_stationary' if STATIONARY else ''}.csv", index=False)
     print("done %.0fs" % (time.time() - t0))

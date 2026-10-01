@@ -74,7 +74,7 @@ def table(df, metric, ctrls, title):
 def main_tables(df):
     out = []
     ctrls = ["Static"] + BASE + ["ARC"]
-    out.append(table(df, "slo_viol_s", ctrls, "SLO-violation time (s per 110-min measured window; lower is better; mean ± 95% CI, n=%d seeds)" % df.seed.nunique()))
+    out.append(table(df, "slo_viol_s", ctrls, f"SLO-violation time (s per 110-min measured window; lower is better; mean ± 95% CI, n={df.seed.nunique()} seeds)"))
     out.append(table(df, "loss_pct", ctrls, "Legitimate-request loss (% of offered load, including requests shed on purpose)"))
     out.append(table(df, "replica_hours", ctrls, "Cost: replica-hours (lower is cheaper)"))
     out.append(table(df, "mttr_s", ctrls, "Mean time to recover from an injected fault (s)"))
@@ -186,7 +186,7 @@ def fig_sweeps(sw):
     plt.close(fig)
 
 
-def fig_antifragile(af):
+def fig_antifragile(af, name="fig_antifragile"):
     fig, ax = plt.subplots(figsize=(5.2, 3.3))
     for c in ["HPA", "HPA-fast", "HPA-45", "PredHPA", "ARC-noChaos", "ARC"]:
         g = af[af.controller == c].groupby("epoch").viol_s
@@ -196,12 +196,12 @@ def fig_antifragile(af):
     ax.set_ylabel("SLO-violation time per epoch (s)")
     ax.legend(fontsize=7, frameon=False, ncol=2)
     fig.tight_layout()
-    fig.savefig(f"{FIG}/fig_antifragile.png")
+    fig.savefig(f"{FIG}/{name}.png")
     plt.close(fig)
 
 
-def antifragile_stats(af):
-    lines = ["**Repeated-stress experiment (same faults every 30 min, 6 h)**", "",
+def antifragile_stats(af, title="Repeated-stress experiment (same faults every 30 min, 6 h; drifting real load)"):
+    lines = [f"**{title}**", "",
              "| Controller | epochs 1-3 (s) | epochs 8-11 (s) | change | Spearman ρ (epoch vs violation) | mean pods |", "|---|---|---|---|---|---|"]
     for c in ["HPA", "HPA-fast", "HPA-45", "PredHPA", "ARC-noChaos", "ARC"]:
         d = af[af.controller == c]
@@ -216,7 +216,32 @@ def antifragile_stats(af):
     open(f"{RES}/tables.md", "a").write("\n" + "\n".join(lines) + "\n")
 
 
+def fig_timeline():
+    from arcsim import run
+    fig, axs = plt.subplots(2, 2, figsize=(9, 4.4), sharex="col")
+    for col, (scen, title) in enumerate([("flash_step", "Abrupt 3x surge"), ("gray", "Gray failure (pods at 30% capacity)")]):
+        for c in ["HPA", "PredHPA", "ARC"]:
+            m, sim, ctrl = run.run_episode(c, scen, 100, keep=True)
+            t = np.arange(len(sim.log["avail"])) * 5 / 60
+            axs[0, col].plot(t, np.array(sim.log["avail"]) * 100, color=COL[c], label=c, lw=1.1)
+            axs[1, col].plot(t, sim.log["pods"], color=COL[c], lw=1.1)
+        t0 = sim.events[0][0] * 5 / 60
+        for r in (0, 1):
+            axs[r, col].axvline(t0, color="k", ls=":", lw=0.8)
+            axs[r, col].set_xlim(t0 - 10, t0 + 30)
+        axs[0, col].set_title(title, fontsize=9)
+        axs[0, col].set_ylim(-3, 103)
+        axs[1, col].set_xlabel("Time (min)")
+    axs[0, 0].set_ylabel("Availability (%)")
+    axs[1, 0].set_ylabel("Pods in cluster")
+    axs[0, 0].legend(fontsize=7, frameon=False, loc="lower left")
+    fig.tight_layout()
+    fig.savefig(f"{FIG}/fig_timeline.png")
+    plt.close(fig)
+
+
 if __name__ == "__main__":
+    fig_timeline()
     df = pd.read_csv(f"{RES}/main.csv")
     main_tables(df)
     fig_bars(df)
@@ -228,4 +253,8 @@ if __name__ == "__main__":
         af = pd.read_csv(f"{RES}/antifragile.csv")
         fig_antifragile(af)
         antifragile_stats(af)
+    if os.path.exists(f"{RES}/antifragile_stationary.csv"):
+        st = pd.read_csv(f"{RES}/antifragile_stationary.csv")
+        fig_antifragile(st, "fig_antifragile_stationary")
+        antifragile_stats(st, "Repeated-stress experiment with identical load every epoch (isolates learning from workload drift)")
     print("ok")
