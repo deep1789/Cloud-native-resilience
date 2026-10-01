@@ -8,6 +8,10 @@ from arcsim.sim import Fault, AVAIL_SLO, DT
 SEEDS = int(sys.argv[1]) if len(sys.argv) > 1 else 12
 S0 = int(sys.argv[2]) if len(sys.argv) > 2 else 100   # evaluation seeds start at 100 (development used 0-19)
 CTRL = ["HPA", "HPA-fast", "HPA-45", "PredHPA", "ARC-noChaos", "ARC"]
+import os
+if os.environ.get("ARC_CTRL"):
+    CTRL = os.environ["ARC_CTRL"].split(",")
+TAG = os.environ.get("ARC_TAG", "")
 STATIONARY = len(sys.argv) > 3 and sys.argv[3] == "stationary"
 EPOCH = 360   # ticks (30 min)
 N_EP = 12
@@ -47,5 +51,5 @@ def job(a):
 if __name__ == "__main__":
     t0 = time.time()
     out = [r for rows in pmap(job, [(c, s) for c in CTRL for s in range(S0, S0 + SEEDS)]) for r in rows]
-    pd.DataFrame(out).to_csv(f"{RES}/antifragile{'_stationary' if STATIONARY else ''}.csv", index=False)
+    pd.DataFrame(out).to_csv(f"{RES}/antifragile{'_stationary' if STATIONARY else ''}{TAG}.csv", index=False)
     print("done %.0fs" % (time.time() - t0))

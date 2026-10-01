@@ -128,6 +128,28 @@ class HPA45(HPA):
     TARGET = 0.45
 
 
+class _Retry:
+    """Mixin: cap client retries (a fixed retry budget without any other ARC mechanism)."""
+    R = 1
+
+    def step(self, obs):
+        a = super().step(obs)
+        a.retries = np.full(N, float(self.R))
+        return a
+
+
+class HPA45R1(_Retry, HPA45):
+    name, R = "HPA-45-r1", 1
+
+
+class HPA45R0(_Retry, HPA45):
+    name, R = "HPA-45-r0", 0
+
+
+class PredHPAR1(_Retry, PredHPA):
+    name, R = "PredHPA-r1", 1
+
+
 class HPARL(HPA):
     """HPA + fixed ingress rate limiter (cannot tell attack from flash crowd)."""
     name = "HPA+RL"
@@ -146,8 +168,9 @@ class ARC(Static):
     name = "ARC"
     TARGET = 0.65
 
-    def __init__(self, seed=0, graph=True, chaos=True, sec=True, guard=True, remed=True, label=None):
+    def __init__(self, seed=0, graph=True, chaos=True, sec=True, guard=True, remed=True, label=None, fb_cap=None):
         super().__init__(seed)
+        self.fb_cap = fb_cap          # None: original ARC; else bound the feedback term at fb_cap x feed-forward
         self.graph, self.chaos, self.sec, self.guard, self.remed = graph, chaos, sec, guard, remed
         if label:
             self.name = label
@@ -251,7 +274,7 @@ class ARC(Static):
         # ---- circuit breakers (graceful degradation) + retry budgets ---------
         breaker = set()
         if self.remed:
-            overloaded = bool(np.max(obs.err[[0, 1, 4, 5]]) > 0.15 or obs.avail < 0.9)
+            overloaded = bool(np.max(obs.err[T.CORE]) > 0.15 or obs.avail < 0.9)
             for (j, c) in T.NONCRIT_EDGES:
                 if overloaded and (obs.util[c] > 1.0 or obs.err[c] > 0.2 or obs.avail < 0.85):
                     self.breaker_until[(j, c)] = t + 12
@@ -283,11 +306,14 @@ class ARC(Static):
         frag = self.frag
         ff = np.ceil(ff * (1 + 0.8 * frag)) if self.chaos else np.ceil(ff * 1.15)
         fb = np.ceil(np.maximum(obs.ready, 1) * util_rob / self.TARGET)
+        if self.fb_cap:   # bounded feedback: retry-inflated utilisation must not run the quota away
+            fb = np.minimum(fb, np.maximum(np.ceil(self.fb_cap * ff), ff + 2))
         raw = np.maximum(ff, fb)
         # gray failure compensation while pods are being rescheduled
         for i in remediate:
             raw[i] = max(raw[i], np.ceil(obs.ready[i] * 1.8))
         raw = np.clip(raw, T.MIN_REP, T.MAX_REP)
+        self.dbg = dict(ff=ff.copy(), fb=fb.copy(), raw=raw.copy(), Lf=Lf)
         self.raw_hist.append(raw)
         self.raw_hist = self.raw_hist[-24:]
 
@@ -378,13 +404,14 @@ class ARC(Static):
 
 
 def make(name, seed=0):
-    base = {"Static": Static, "HPA": HPA, "HPA-45": HPA45, "HPA-fast": HPAFast, "PredHPA": PredHPA, "HPA+RL": HPARL}
+    base = {"Static": Static, "HPA": HPA, "HPA-45": HPA45, "HPA-fast": HPAFast, "HPA-45-r1": HPA45R1, "HPA-45-r0": HPA45R0, "PredHPA-r1": PredHPAR1, "PredHPA": PredHPA, "HPA+RL": HPARL}
     if name in base:
         return base[name](seed)
     if name == "ARC":
         return ARC(seed)
     ab = {"ARC-noGraph": dict(graph=False), "ARC-noChaos": dict(chaos=False), "ARC-noSec": dict(sec=False),
-          "ARC-noGuard": dict(guard=False), "ARC-noRemed": dict(remed=False)}
+          "ARC-noGuard": dict(guard=False), "ARC-noRemed": dict(remed=False),
+          "ARC-bf": dict(fb_cap=1.5), "ARC-bf-noGraph": dict(fb_cap=1.5, graph=False)}
     if name in ab:
         return ARC(seed, label=name, **ab[name])
     raise KeyError(name)

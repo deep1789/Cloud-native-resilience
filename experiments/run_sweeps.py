@@ -8,6 +8,10 @@ from arcsim.sim import Fault
 SEEDS = int(sys.argv[1]) if len(sys.argv) > 1 else 10
 S0 = int(sys.argv[2]) if len(sys.argv) > 2 else 100   # evaluation seeds start at 100 (development used 0-19)
 CTRL = ["HPA", "HPA-fast", "HPA-45", "PredHPA", "HPA+RL", "ARC"]
+import os
+if os.environ.get("ARC_CTRL"):
+    CTRL = os.environ["ARC_CTRL"].split(",")
+TAG = os.environ.get("ARC_TAG", "")
 
 
 def job(a):
@@ -26,5 +30,5 @@ if __name__ == "__main__":
     t0 = time.time()
     jobs = [("flash", m, c, s) for m in [1.5, 2, 3, 4, 5, 6] for c in CTRL for s in range(S0, S0 + SEEDS)]
     jobs += [("ddos", m, c, s) for m in [1, 2, 3, 5, 8] for c in CTRL for s in range(S0, S0 + SEEDS)]
-    pd.DataFrame(pmap(job, jobs)).to_csv(f"{RES}/sweeps.csv", index=False)
+    pd.DataFrame(pmap(job, jobs)).to_csv(f"{RES}/sweeps{TAG}.csv", index=False)
     print("done %.0fs" % (time.time() - t0))

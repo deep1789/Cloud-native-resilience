@@ -1,62 +1,94 @@
-# Cloud-native resilience: chaos-in-the-loop antifragile control (ARC)
+# Cloud-native resilience: chaos-in-the-loop autonomic control (ARC) — and what it buys beyond retry limits
 
 Code, experiments and paper draft for a submission to the special issue on **resilience-by-design for
 cloud-native systems** (stress-oriented evaluation of self-healing, AIOps, chaos engineering and
 security-aware orchestration).
 
-**Idea.** Existing autoscalers, AIOps and chaos tooling are evaluated and run separately. ARC closes the
-loop: a controller that (1) plans capacity from the *service dependency graph*, (2) learns per-service
-fragility by running *low-blast-radius chaos probes on itself* (a bandit chooses what to probe), (3)
-tells attacks from flash crowds and detects *poisoned telemetry* with a flow-conservation check,
-(4) remediates gray failures and degrades gracefully (circuit breakers, retry budgets), and
-(5) model-checks every risky action through a *safe-adaptation guardrail*.
+* **Paper draft:** [`paper/paper.md`](paper/paper.md) (PDF: [`paper/paper.pdf`](paper/paper.pdf))
+* **All numbers:** [`results/tables.md`](results/tables.md) · **figures:** [`figures/`](figures/)
+
+## What was built
+
+**ARC** (Antifragile Resilience Controller) closes the loop between chaos engineering and autoscaling:
+(1) dependency-graph capacity planning, (2) chaos probes that ARC runs on itself, scheduled by a bandit,
+whose stress margin sets per-service redundancy headroom, (3) attack-vs-flash-crowd discrimination and a
+flow-conservation check for poisoned telemetry, (4) circuit breakers, retry budgets and gray-failure
+remediation, (5) a safe-adaptation guardrail. It is evaluated in a trace-driven simulator against
+Kubernetes-style autoscalers and stronger baselines.
+
+## Headline results (and honest caveats)
+
+| Finding | Evidence |
+|---|---|
+| Against default-retry (cap 2) Kubernetes-style autoscalers ARC cuts SLO-violation time ~10x at equal cost (13.1 s vs 127.8 s, NASA trace; same pattern on ClarkNet) | paper §6.1, §6.5 |
+| **But a retry-limited baseline closes most of that gap.** Excluding the poisoning scenario an HPA with retries disabled matches ARC at equal cost (12.0 s vs 13.4 s); PredHPA with 1 retry beats ARC on SLO at +22% cost; on a 24-service graph HPA-45 with retries disabled **beats ARC** (91 s vs 456 s) | paper §6.2 |
+| ARC's distinctive wins: surges beyond quota (12.2% vs 19.5-23.4% loss at 6x), 13-25% lower cost under volumetric DDoS, poisoned utilisation telemetry (shared with forecast-based autoscalers), and the only controller that **improves under repeated stress** (-24%, p=5e-5; identical load each epoch) | paper §6.3 |
+| Graph-aware planning, the security layer and chaos learning show **no measurable effect** in the main scenarios (chaos learning shows up only under repeated exposure); remediation/graceful degradation and the guardrail carry the benefit | paper §6.4, §6.5 |
 
 ## What is real and what is simulated
 
 | | |
 |---|---|
-| Workload | **Real**: NASA Kennedy Space Center HTTP trace, July 1995 (1,891,714 requests). Rescaled in amplitude only. |
-| Cluster, services, queues, scaling lag, faults, attacks | **Simulated** (trace-driven fluid simulator, `arcsim/`). Parameters are modelling assumptions, not measurements. |
-| Real Kubernetes validation | **Not done** (no container runtime in the authoring environment). This is the main limitation. |
+| Workloads | **Real**: NASA-HTTP (Jul 1995, 1,891,714 requests) and ClarkNet-HTTP (28 Aug-3 Sep 1995, 1,654,882 requests) from the Internet Traffic Archive. Only the amplitude is rescaled. |
+| Cluster, services, queues, scaling lag, faults, attacks | **Simulated** (`arcsim/`). Parameters are modelling assumptions, not measurements. |
+| Topologies | 10-service Online-Boutique-style graph; synthetic 24-service 6-tier graph (fixed generator seed). |
+| Real Kubernetes validation | **Not done** (no container runtime in the authoring environment). Main limitation. |
 
 ## Layout
 
 ```
-arcsim/            simulator, topology, workload loader, controllers, scenarios, metrics
+arcsim/            simulator, topologies, workload loader, controllers, scenarios, metrics
 experiments/       run_main.py, run_sweeps.py, run_antifragile.py, analyze.py
-results/           CSVs, tables.md (all numbers quoted in the paper)
+results/           CSVs and tables.md
 figures/           PNG figures
-paper/paper.md     manuscript draft
+paper/             paper.md, build_pdf.py, paper.pdf
 tests/             pytest invariants for the simulator
-data/download.sh   fetches the NASA trace
+data/download.sh   fetches the two traces
 ```
 
 ## Reproduce
 
 ```
-pip install numpy pandas matplotlib scipy tabulate pytest
+pip install numpy pandas matplotlib scipy tabulate pytest markdown
 sh data/download.sh
 python -m pytest -q tests
 cd experiments
-python run_main.py 40 100        # 10 scenarios x 12 controllers x 40 seeds (~10 min on 4 cores)
+python run_main.py 40 100                                   # NASA, 10-service: 10 scenarios x 12 controllers x 40 seeds (~9 min on 4 cores)
+ARC_TRACE=clarknet python run_main.py 40 100 "Static,HPA,HPA-fast,HPA-45,PredHPA,HPA+RL,ARC"
+ARC_TOPO=deep python run_main.py 30 200 "HPA,HPA-45,PredHPA,ARC,ARC-noGraph,ARC-bf"
+ARC_TOPO=deep ARC_TAG=_deep_abl python run_main.py 30 200 "ARC-noRemed,ARC-noGuard"
+ARC_TAG=_retry python run_main.py 40 100 "HPA-45-r1,HPA-45-r0,PredHPA-r1"
+ARC_TOPO=deep ARC_TAG=_deep_retry python run_main.py 30 200 "HPA-45-r1,HPA-45-r0,PredHPA-r1"
 python run_sweeps.py 20 100
-python run_antifragile.py 30 100
-python analyze.py                # writes results/tables.md and figures/*.png
+ARC_CTRL="HPA-45-r0,HPA-45-r1,PredHPA-r1,ARC" ARC_TAG=_retry python run_sweeps.py 20 100
+python run_antifragile.py 30 100                            # drifting real load
+python run_antifragile.py 30 100 stationary                 # identical load every epoch
+ARC_CTRL="HPA-45-r0,HPA-45-r1,PredHPA-r1,ARC" ARC_TAG=_retry python run_antifragile.py 30 100 stationary
+python analyze.py                                           # tables.md + figures
+cd ../paper && python build_pdf.py                          # paper.pdf (needs Chromium)
 ```
 
 ## Development log (disclosure)
 
-Development used seeds 0-19; all reported results use **fresh seeds 100+** that were not looked at while
-tuning. Changes made after looking at development results:
+Development used seeds 0-19. Reported results use seeds 100-139 (main, ClarkNet, sweeps from 100, repeated stress) and
+200-229 (deep graph). Changes made after looking at results, in order:
 
 1. Metrics exclude the first 10 min of every run (cold-start transient of the autoscalers).
-2. Added stronger / cost-matched baselines (HPA-fast, HPA-45) and an abrupt-surge scenario (`flash_step`)
-   because the first results were flattering to ARC (ramped surges are easy to extrapolate; ARC used more replicas).
-3. A chaos probe fired while a surge had exhausted the pod quota and the killed pod could not be replaced
-   (seed 18). Fixes: the simulator's scheduler now serves the most under-provisioned service first (it
-   previously favoured low-index services, which was unfair to every controller), and the probe guardrail
-   now requires stable load and free quota.
+2. Added stronger / cost-matched baselines (HPA-fast, HPA-45) and an abrupt-surge scenario (`flash_step`), because the
+   first results flattered ARC (ramped surges are easy to extrapolate; ARC used more replicas).
+3. A chaos probe fired while a surge had exhausted the pod quota and the killed pod could not be replaced (seed 18).
+   Fixes: the simulator's scheduler now serves the most under-provisioned service first (it previously favoured
+   low-index services, unfair to every controller), and the probe guardrail now requires stable load and free quota.
 4. Initial pod sizing is capped at the cluster quota (found by a unit test; no effect on reported runs).
+5. Added a second trace (ClarkNet) and a synthetic 24-service graph to test robustness and the graph-planning claim.
+   My first deep graph was infeasible (a service needed ~66 pods against a cap of 30) - a design bug, fixed by sizing
+   per-pod capacity from the call multiplier. A "bounded feedback" variant (`ARC-bf`) was tried as a possible fix for
+   quota runaway; it did not help and is reported as an exploratory variant. An early explanation based on two seeds
+   (100, 101) did not survive the 30-seed run.
+6. **Retry-limited baselines (HPA-45-r1/r0, PredHPA-r1) were added after the deep-graph ablation showed that ARC's
+   advantage came from retry/breaker control.** They reverse much of the headline result (paper §6.2). They were run
+   on seeds already used for the main comparison on the 10-service graph.
 
-Scenario definitions and fault magnitudes were fixed before the first run and not changed afterwards
-(only `flash_step` was added).
+Scenario definitions and fault magnitudes were fixed before the first run (only `flash_step` was added). Retry-limited
+baselines were not run on ClarkNet. The references were checked against publisher/author pages (see paper); books and
+datasets should be re-checked before submission.

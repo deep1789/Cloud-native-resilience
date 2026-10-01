@@ -19,7 +19,9 @@ ABL = ["ARC-noGraph", "ARC-noChaos", "ARC-noSec", "ARC-noGuard", "ARC-noRemed"]
 SCEN = ["baseline", "flash", "flash_step", "kill_cascade", "node_failure", "gray", "ddos", "ddos_kill", "poison_flash", "storm"]
 # Okabe-Ito colour-blind-safe palette
 COL = {"Static": "#999999", "HPA": "#0072B2", "HPA-fast": "#56B4E9", "HPA-45": "#009E73", "PredHPA": "#E69F00",
-       "HPA+RL": "#CC79A7", "ARC": "#D55E00", "ARC-noChaos": "#8c564b"}
+       "HPA+RL": "#CC79A7", "ARC": "#D55E00", "ARC-noChaos": "#8c564b",
+       "HPA-45-r0": "#117733", "HPA-45-r1": "#88CCEE", "PredHPA-r1": "#DDAA33",
+       "ARC-noGraph": "#A0522D", "ARC-bf": "#5C3317"}
 plt.rcParams.update({"font.size": 9, "axes.spines.top": False, "axes.spines.right": False, "figure.dpi": 150})
 
 
@@ -174,10 +176,13 @@ def fig_sweeps(sw):
     fig, axs = plt.subplots(1, 2, figsize=(8, 3.1))
     for ax, kind, xl in [(axs[0], "flash", "Surge magnitude (× normal load)"), (axs[1], "ddos", "Attack volume (× baseline attack unit)")]:
         d = sw[sw.scenario == kind]
-        for c in ["HPA", "HPA-fast", "HPA-45", "PredHPA", "HPA+RL", "ARC"]:
+        for c in ["HPA", "HPA-45", "PredHPA", "HPA+RL", "HPA-45-r0", "PredHPA-r1", "ARC"]:
+            if c not in set(d.controller):
+                continue
             g = d[d.controller == c].groupby("magnitude").loss_pct
             m, h = g.mean(), g.apply(lambda v: ci(v)[1])
-            ax.errorbar(m.index, m.values, yerr=h.values, color=COL[c], label=c, marker="o", ms=3, lw=1.2, capsize=1.5)
+            ax.errorbar(m.index, m.values, yerr=h.values, color=COL[c], label=c, marker="o", ms=3, lw=1.2, capsize=1.5,
+                        ls="--" if c.endswith(("-r0", "-r1")) else "-")
         ax.set_xlabel(xl)
         ax.set_ylabel("Legitimate-request loss (%)")
     axs[0].legend(fontsize=7, frameon=False)
@@ -187,16 +192,18 @@ def fig_sweeps(sw):
 
 
 def fig_antifragile(af, name="fig_antifragile"):
-    fig, ax = plt.subplots(figsize=(5.2, 3.3))
-    for c in ["HPA", "HPA-fast", "HPA-45", "PredHPA", "ARC-noChaos", "ARC"]:
+    fig, ax = plt.subplots(figsize=(5.6, 3.6))
+    for c in ["HPA", "HPA-fast", "HPA-45", "PredHPA", "ARC-noChaos", "HPA-45-r0", "PredHPA-r1", "ARC"]:
+        if c not in set(af.controller):
+            continue
         g = af[af.controller == c].groupby("epoch").viol_s
         m, h = g.mean(), g.apply(lambda v: ci(v)[1])
         ax.errorbar(m.index, m.values, yerr=h.values, color=COL[c], label=c, marker="o", ms=3, lw=1.2, capsize=1.5)
     ax.set_xlabel("Exposure epoch (identical fault set every 30 min)")
     ax.set_ylabel("SLO-violation time per epoch (s)")
-    ax.legend(fontsize=7, frameon=False, ncol=2)
+    ax.legend(fontsize=7, frameon=False, ncol=4, loc="upper center", bbox_to_anchor=(0.5, -0.22))
     fig.tight_layout()
-    fig.savefig(f"{FIG}/{name}.png")
+    fig.savefig(f"{FIG}/{name}.png", bbox_inches="tight")
     plt.close(fig)
 
 
@@ -214,6 +221,147 @@ def antifragile_stats(af, title="Repeated-stress experiment (same faults every 3
             p = 1.0
         lines.append(f"| {c} | {fmt(early)} | {fmt(late)} | {100 * (late.mean() - early.mean()) / max(early.mean(), 1e-9):+.0f}% (p={p:.3g}) | {rho.statistic:+.2f} | {d.pods.mean():.1f} |")
     open(f"{RES}/tables.md", "a").write("\n" + "\n".join(lines) + "\n")
+
+
+def extra_tables(df, label, ctrls):
+    """Compact per-scenario table, fault-scenario means and ARC-vs-baseline win counts for a robustness run."""
+    sc = [x for x in SCEN if x in set(df.scenario)]
+    lines = [f"**{label}: SLO-violation time (s), mean ± 95% CI, n={df.seed.nunique()} seeds**", "",
+             "| Scenario | " + " | ".join(ctrls) + " |", "|---|" + "---|" * len(ctrls)]
+    for s_ in sc:
+        vals = {c: ci(df[(df.scenario == s_) & (df.controller == c)].slo_viol_s)[0] for c in ctrls}
+        best = min(vals, key=vals.get)
+        row = []
+        for c in ctrls:
+            t = fmt(df[(df.scenario == s_) & (df.controller == c)].slo_viol_s)
+            row.append(f"**{t}**" if c == best else t)
+        lines.append(f"| {s_} | " + " | ".join(row) + " |")
+    f = df[df.scenario != "baseline"]
+    agg = f.groupby("controller")[["slo_viol_s", "loss_pct", "replica_hours", "mttr_s", "p95_lat_s"]].mean().loc[ctrls]
+    lines += ["", f"**{label}: mean over the fault scenarios**", "", agg.round(2).to_markdown()]
+    if "ARC" in ctrls:
+        lines += ["", f"**{label}: ARC vs. each other controller (paired Wilcoxon on SLO-violation time per scenario, Holm-corrected over scenarios)**", "",
+                  "| vs. | ARC better | n.s. | other better |", "|---|---|---|---|"]
+        for b in [c for c in ctrls if c != "ARC"]:
+            ps = [paired_p(df, s_, "ARC", b, "slo_viol_s") for s_ in sc]
+            adj = holm(ps)
+            better = n_s = worse = 0
+            for s_, p_ in zip(sc, adj):
+                ma = df[(df.scenario == s_) & (df.controller == "ARC")].slo_viol_s.mean()
+                mb = df[(df.scenario == s_) & (df.controller == b)].slo_viol_s.mean()
+                if p_ >= 0.05:
+                    n_s += 1
+                elif ma < mb:
+                    better += 1
+                else:
+                    worse += 1
+            lines.append(f"| {b} | {better} | {n_s} | {worse} |")
+    open(f"{RES}/tables.md", "a").write("\n" + "\n".join(lines) + "\n")
+
+
+def fig_robustness(runs):
+    """runs: list of (label, dataframe, controllers)."""
+    fig, axs = plt.subplots(1, 2, figsize=(9, 3.3))
+    width = 0.8 / len(runs)
+    allc = ["HPA", "HPA-fast", "HPA-45", "PredHPA", "HPA+RL", "ARC", "ARC-noGraph", "ARC-bf"]
+    for k, (label, d, ctrls) in enumerate(runs):
+        f = d[d.scenario != "baseline"]
+        for j, c in enumerate([c for c in allc if c in ctrls]):
+            x = allc.index(c) + (k - (len(runs) - 1) / 2) * width
+            g = f[f.controller == c]
+            v, h = ci(g.groupby("seed").slo_viol_s.mean())
+            axs[0].bar(x, max(v, 0.5), width * 0.95, yerr=h, color=COL.get(c, "#777777"), alpha=1,
+                       hatch=["", "//", "xx"][k], edgecolor="white", error_kw={"lw": 0.6}, label=label if j == 0 or c == "HPA" else None)
+            v2, h2 = ci(g.groupby("seed").replica_hours.mean())
+            axs[1].bar(x, v2, width * 0.95, yerr=h2, color=COL.get(c, "#777777"), alpha=1,
+                       hatch=["", "//", "xx"][k], edgecolor="white", error_kw={"lw": 0.6})
+    for ax in axs:
+        ax.set_xticks(range(len(allc)))
+        ax.set_xticklabels(allc, rotation=30, ha="right")
+    axs[0].set_yscale("log")
+    axs[0].set_ylabel("SLO-violation time (s, log)\nmean over fault scenarios")
+    axs[1].set_ylabel("Cost (replica-hours)")
+    handles = [plt.Rectangle((0, 0), 1, 1, fc="#bbbbbb", hatch=["", "//", "xx"][k], ec="white") for k in range(len(runs))]
+    axs[0].legend(handles, [r[0] for r in runs], fontsize=7, frameon=False)
+    fig.tight_layout()
+    fig.savefig(f"{FIG}/fig_robustness.png")
+    plt.close(fig)
+
+
+def retry_tables():
+    """How much of ARC's advantage survives against baselines with limited client retries?"""
+    lines = []
+    cols = ["slo_viol_s", "loss_pct", "replica_hours", "mttr_s"]
+    ctrls = ["HPA-45", "HPA-45-r1", "HPA-45-r0", "PredHPA", "PredHPA-r1", "ARC"]
+    rdf = {}
+    for label, main, extra, seeds in [("NASA trace, 10-service graph", "main.csv", "main_retry.csv", None),
+                                      ("NASA trace, 24-service deep graph", "main_deep.csv", "main_deep_retry.csv", (200, 229))]:
+        if not (os.path.exists(f"{RES}/{main}") and os.path.exists(f"{RES}/{extra}")):
+            continue
+        a = pd.read_csv(f"{RES}/{main}")
+        if seeds:
+            a = a[a.seed.between(*seeds)]
+        d = pd.concat([a[a.controller.isin(["HPA-45", "PredHPA", "ARC"])], pd.read_csv(f"{RES}/{extra}")], ignore_index=True)
+        rdf[label] = d
+        f = d[d.scenario != "baseline"]
+        agg = f.groupby("controller")[cols].mean().loc[ctrls]
+        lines += [f"**Retry-limited baselines, {label}: mean over fault scenarios** (r1 = at most 1 retry, r0 = no retries; ARC adapts its caps)", "", agg.round(2).to_markdown(), ""]
+        sc = [x for x in SCEN if x in set(d.scenario)]
+        lines += [f"**Retry-limited baselines, {label}: SLO-violation time (s)**", "", "| Scenario | " + " | ".join(ctrls) + " |", "|---|" + "---|" * len(ctrls)]
+        for s_ in sc:
+            vals = {c: ci(d[(d.scenario == s_) & (d.controller == c)].slo_viol_s)[0] for c in ctrls}
+            best = min(vals, key=vals.get)
+            lines.append(f"| {s_} | " + " | ".join((f"**{fmt(d[(d.scenario == s_) & (d.controller == c)].slo_viol_s)}**" if c == best else fmt(d[(d.scenario == s_) & (d.controller == c)].slo_viol_s)) for c in ctrls) + " |")
+        lines += ["", f"**{label}: ARC vs. retry-limited baselines (paired Wilcoxon, Holm over scenarios)**", "", "| vs. | ARC better | n.s. | other better |", "|---|---|---|---|"]
+        for b in ["HPA-45-r1", "HPA-45-r0", "PredHPA-r1"]:
+            adj = holm([paired_p(d, s_, "ARC", b, "slo_viol_s") for s_ in sc])
+            bt = ns = wr = 0
+            for s_, p_ in zip(sc, adj):
+                ma = d[(d.scenario == s_) & (d.controller == "ARC")].slo_viol_s.mean()
+                mb = d[(d.scenario == s_) & (d.controller == b)].slo_viol_s.mean()
+                if p_ >= 0.05:
+                    ns += 1
+                elif ma < mb:
+                    bt += 1
+                else:
+                    wr += 1
+            lines.append(f"| {b} | {bt} | {ns} | {wr} |")
+        lines.append("")
+    if os.path.exists(f"{RES}/antifragile_stationary_retry.csv"):
+        a = pd.concat([pd.read_csv(f"{RES}/antifragile_stationary.csv").query("controller == 'ARC'"),
+                       pd.read_csv(f"{RES}/antifragile_stationary_retry.csv").query("controller != 'ARC'")], ignore_index=True)
+        lines += ["**Repeated stress (identical load), retry-limited baselines**", "", "| Controller | epochs 1-3 (s) | epochs 8-11 (s) | change | mean pods |", "|---|---|---|---|---|"]
+        for c in ["HPA-45-r0", "HPA-45-r1", "PredHPA-r1", "ARC"]:
+            x = a[a.controller == c]
+            e = x[x.epoch <= 3].groupby("seed").viol_s.mean()
+            l_ = x[x.epoch >= 8].groupby("seed").viol_s.mean()
+            try:
+                p = stats.wilcoxon(e.values, l_.values).pvalue
+            except ValueError:
+                p = 1.0
+            lines.append(f"| {c} | {fmt(e)} | {fmt(l_)} | {100 * (l_.mean() - e.mean()) / max(e.mean(), 1e-9):+.0f}% (p={p:.3g}) | {x.pods.mean():.1f} |")
+        lines.append("")
+    open(f"{RES}/tables.md", "a").write("\n" + "\n".join(lines) + "\n")
+    return rdf
+
+
+def fig_retry(rdf):
+    fig, axs = plt.subplots(1, 2, figsize=(9, 3.4))
+    order = ["HPA-45", "HPA-45-r1", "HPA-45-r0", "PredHPA", "PredHPA-r1", "ARC"]
+    for ax, (label, d) in zip(axs, rdf.items()):
+        f = d[d.scenario != "baseline"]
+        for c in order:
+            g = f[f.controller == c]
+            x, y = g.groupby("seed").replica_hours.mean(), g.groupby("seed").slo_viol_s.mean()
+            ax.errorbar(x.mean(), max(y.mean(), 1), xerr=ci(x)[1], yerr=ci(y)[1], marker="o", ms=7, color=COL[c], label=c, capsize=1.5, lw=0.8)
+        ax.set_yscale("log")
+        ax.set_title(label, fontsize=9)
+        ax.set_xlabel("Cost (replica-hours per run)")
+    axs[0].set_ylabel("SLO-violation time (s, log)\nmean over fault scenarios")
+    axs[0].legend(fontsize=7, frameon=False)
+    fig.tight_layout()
+    fig.savefig(f"{FIG}/fig_retry.png")
+    plt.close(fig)
 
 
 def fig_timeline():
@@ -248,13 +396,33 @@ if __name__ == "__main__":
     fig_pareto(df)
     fig_ablation(df)
     if os.path.exists(f"{RES}/sweeps.csv"):
-        fig_sweeps(pd.read_csv(f"{RES}/sweeps.csv"))
+        sw = pd.read_csv(f"{RES}/sweeps.csv")
+        if os.path.exists(f"{RES}/sweeps_retry.csv"):
+            sw = pd.concat([sw, pd.read_csv(f"{RES}/sweeps_retry.csv").query("controller != 'ARC'")], ignore_index=True)
+        fig_sweeps(sw)
     if os.path.exists(f"{RES}/antifragile.csv"):
         af = pd.read_csv(f"{RES}/antifragile.csv")
         fig_antifragile(af)
         antifragile_stats(af)
     if os.path.exists(f"{RES}/antifragile_stationary.csv"):
         st = pd.read_csv(f"{RES}/antifragile_stationary.csv")
+        if os.path.exists(f"{RES}/antifragile_stationary_retry.csv"):
+            st = pd.concat([st, pd.read_csv(f"{RES}/antifragile_stationary_retry.csv").query("controller != 'ARC'")], ignore_index=True)
         fig_antifragile(st, "fig_antifragile_stationary")
         antifragile_stats(st, "Repeated-stress experiment with identical load every epoch (isolates learning from workload drift)")
+    runs = [("NASA trace, 10-service graph", df, sorted(set(df.controller)))]
+    for fn, label, cts in [("main_clarknet.csv", "ClarkNet trace, 10-service graph", ["Static", "HPA", "HPA-fast", "HPA-45", "PredHPA", "HPA+RL", "ARC"]),
+                           ("main_deep.csv", "NASA trace, 24-service deep graph", ["HPA", "HPA-45", "PredHPA", "ARC", "ARC-noGraph", "ARC-bf"])]:
+        if os.path.exists(f"{RES}/{fn}"):
+            d = pd.read_csv(f"{RES}/{fn}")
+            if fn == "main_deep.csv" and os.path.exists(f"{RES}/main_deep_abl.csv"):
+                d = pd.concat([d, pd.read_csv(f"{RES}/main_deep_abl.csv")], ignore_index=True)
+                cts = cts + ["ARC-noRemed", "ARC-noGuard"]
+            extra_tables(d, label, cts)
+            runs.append((label, d, cts))
+    if len(runs) > 1:
+        fig_robustness(runs)
+    rdf = retry_tables()
+    if rdf:
+        fig_retry(rdf)
     print("ok")
