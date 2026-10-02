@@ -138,6 +138,18 @@ class _Retry:
         return a
 
 
+class HPAR0(_Retry, HPA):
+    name, R = "HPA-r0", 0
+
+
+class HPAFastR0(_Retry, HPAFast):
+    name, R = "HPA-fast-r0", 0
+
+
+class PredHPAR0(_Retry, PredHPA):
+    name, R = "PredHPA-r0", 0
+
+
 class HPA45R1(_Retry, HPA45):
     name, R = "HPA-45-r1", 1
 
@@ -168,8 +180,9 @@ class ARC(Static):
     name = "ARC"
     TARGET = 0.65
 
-    def __init__(self, seed=0, graph=True, chaos=True, sec=True, guard=True, remed=True, label=None, fb_cap=None):
+    def __init__(self, seed=0, graph=True, chaos=True, sec=True, guard=True, remed=True, label=None, fb_cap=None, r_default=DEFAULT_RETRIES):
         super().__init__(seed)
+        self.r_default = r_default    # proactive default retry cap (original ARC: 2)
         self.fb_cap = fb_cap          # None: original ARC; else bound the feedback term at fb_cap x feed-forward
         self.graph, self.chaos, self.sec, self.guard, self.remed = graph, chaos, sec, guard, remed
         if label:
@@ -191,7 +204,7 @@ class ARC(Static):
         self.avail_hist = []
         self.deficit_cnt = np.zeros(N)
         self.breaker_until = {}
-        self.retry_hold = np.full(N, float(DEFAULT_RETRIES))
+        self.retry_hold = np.full(N, float(r_default))
         self.inc_loss = 0.0
         self.inc_active = False
         self.inc_service = None
@@ -280,12 +293,12 @@ class ARC(Static):
                     self.breaker_until[(j, c)] = t + 12
                 if self.breaker_until.get((j, c), -1) > t:
                     breaker.add((j, c))
-            retries = np.full(N, float(DEFAULT_RETRIES))
+            retries = np.full(N, float(self.r_default))
             for j in range(N):
                 kids = [c for c in range(N) if T.W[j, c] > 0]
                 if kids:
                     worst = max(max(obs.err[c], 1 - 1 / max(1.0, obs.util[c])) for c in kids)
-                    retries[j] = 0.0 if worst > 0.5 else (1.0 if worst > 0.2 else DEFAULT_RETRIES)
+                    retries[j] = 0.0 if worst > 0.5 else (min(1.0, self.r_default) if worst > 0.2 else self.r_default)
             self.retry_hold = retries
             act.retries = retries
         act.breaker = breaker
@@ -404,14 +417,15 @@ class ARC(Static):
 
 
 def make(name, seed=0):
-    base = {"Static": Static, "HPA": HPA, "HPA-45": HPA45, "HPA-fast": HPAFast, "HPA-45-r1": HPA45R1, "HPA-45-r0": HPA45R0, "PredHPA-r1": PredHPAR1, "PredHPA": PredHPA, "HPA+RL": HPARL}
+    base = {"Static": Static, "HPA": HPA, "HPA-45": HPA45, "HPA-fast": HPAFast, "HPA-r0": HPAR0, "HPA-fast-r0": HPAFastR0, "PredHPA-r0": PredHPAR0, "HPA-45-r1": HPA45R1, "HPA-45-r0": HPA45R0, "PredHPA-r1": PredHPAR1, "PredHPA": PredHPA, "HPA+RL": HPARL}
     if name in base:
         return base[name](seed)
     if name == "ARC":
         return ARC(seed)
     ab = {"ARC-noGraph": dict(graph=False), "ARC-noChaos": dict(chaos=False), "ARC-noSec": dict(sec=False),
           "ARC-noGuard": dict(guard=False), "ARC-noRemed": dict(remed=False),
-          "ARC-bf": dict(fb_cap=1.5), "ARC-bf-noGraph": dict(fb_cap=1.5, graph=False)}
+          "ARC-bf": dict(fb_cap=1.5), "ARC-r0": dict(r_default=0), "ARC-r1": dict(r_default=1),
+          "ARC-r0-noChaos": dict(r_default=0, chaos=False), "ARC-bf-noGraph": dict(fb_cap=1.5, graph=False)}
     if name in ab:
         return ARC(seed, label=name, **ab[name])
     raise KeyError(name)
