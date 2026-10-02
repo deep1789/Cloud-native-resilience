@@ -15,7 +15,7 @@ FIG = os.path.join(HERE, "..", "figures")
 src = sys.argv[1] if len(sys.argv) > 1 else "testbed.jsonl"
 rows = [json.loads(l) for l in open(os.path.join(RES, src))]
 df = pd.DataFrame([{k: v for k, v in r.items() if not k.startswith("_")} for r in rows])
-order = [c for c in ["HPA-45", "HPA-45-r0", "PredHPA-r1", "ARC", "ARC-r0"] if c in set(df.controller)]
+order = [c for c in ["HPA-45", "HPA-45-r0", "PredHPA-r0", "ARC", "ARC-r0"] if c in set(df.controller)]
 scen = [s for s in ["baseline", "flash_step", "kill_cascade", "gray"] if s in set(df.scenario)]
 out = [f"**Container testbed: runs = {len(df)}, seeds per cell = {df.groupby(['controller', 'scenario']).seed.nunique().min()}-"
        f"{df.groupby(['controller', 'scenario']).seed.nunique().max()}**", ""]
@@ -33,7 +33,7 @@ open(os.path.join(RES, "testbed_tables.md"), "w").write("\n".join(out))
 print("\n".join(out))
 
 # timeline for one seed/scenario
-COL = {"HPA-45": "#009E73", "HPA-45-r0": "#117733", "PredHPA-r1": "#DDAA33", "ARC": "#D55E00", "ARC-r0": "#8c564b"}
+COL = {"HPA-45": "#009E73", "HPA-45-r0": "#117733", "PredHPA-r0": "#E69F00", "PredHPA-r1": "#DDAA33", "ARC": "#D55E00", "ARC-r0": "#8c564b"}
 for s in [x for x in ["gray", "kill_cascade", "flash_step"] if x in scen]:
     fig, axs = plt.subplots(2, 1, figsize=(6, 4), sharex=True)
     seed = min(df[df.scenario == s].seed)

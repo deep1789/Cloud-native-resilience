@@ -24,6 +24,8 @@ Kubernetes-style autoscalers and stronger baselines.
 | **But a retry-limited baseline closes most of that gap.** Excluding the poisoning scenario an HPA with retries disabled matches ARC at equal cost (12.0 s vs 13.4 s); PredHPA with 1 retry beats ARC on SLO at +22% cost; on a 24-service graph HPA-45 with retries disabled **beats ARC** (91 s vs 456 s) | paper §6.2 |
 | ARC's distinctive wins: surges beyond quota (12.2% vs 19.5-23.4% loss at 6x), 13-25% lower cost under volumetric DDoS, poisoned utilisation telemetry (shared with forecast-based autoscalers), and the only controller that **improves under repeated stress** (-24%, p=5e-5; identical load each epoch) | paper §6.3 |
 | Graph-aware planning, the security layer and chaos learning show **no measurable effect** in the main scenarios (chaos learning shows up only under repeated exposure); remediation/graceful degradation and the guardrail carry the benefit | paper §6.4, §6.5 |
+| **Pre-registered test (seeds never used before):** ARC-r0 (proactive retry cap 0) passes H1-H4 as registered, but H1/H3 pass only because of the poisoning scenario; a forecasting autoscaler without retries is more reliable at +19-25% cost | paper §6.6, `experiments/PREREGISTRATION.md` |
+| **Container testbed (real Docker pods, queues, retries, kills; not Kubernetes):** confirms the direction of the retry effect and PredHPA-r0's reliability, but ranks ARC-r0 last (pre-registered T2 failed): real chaos probes cause visible failures when retries are off, which the simulator does not model | paper §6.7, `testbed/` |
 
 ## What is real and what is simulated
 
@@ -32,7 +34,8 @@ Kubernetes-style autoscalers and stronger baselines.
 | Workloads | **Real**: NASA-HTTP (Jul 1995, 1,891,714 requests) and ClarkNet-HTTP (28 Aug-3 Sep 1995, 1,654,882 requests) from the Internet Traffic Archive. Only the amplitude is rescaled. |
 | Cluster, services, queues, scaling lag, faults, attacks | **Simulated** (`arcsim/`). Parameters are modelling assumptions, not measurements. |
 | Topologies | 10-service Online-Boutique-style graph; synthetic 24-service 6-tier graph (fixed generator seed). |
-| Real Kubernetes validation | **Not done** (no container runtime in the authoring environment). Main limitation. |
+| Container testbed | **Real software, not Kubernetes** (`testbed/`): Docker containers, real queues/timeouts/retries/kills, real trace replay; start-up delay and gray failure emulated. |
+| Real Kubernetes validation | **Not done.** Main remaining limitation. |
 
 ## Layout
 
@@ -42,6 +45,7 @@ experiments/       run_main.py, run_sweeps.py, run_antifragile.py, analyze.py
 results/           CSVs and tables.md
 figures/           PNG figures
 paper/             paper.md, build_pdf.py, paper.pdf
+testbed/           container testbed (worker.py, orchestrator.py, analyze_testbed.py)
 tests/             pytest invariants for the simulator
 data/download.sh   fetches the two traces
 ```
@@ -65,6 +69,9 @@ python run_antifragile.py 30 100                            # drifting real load
 python run_antifragile.py 30 100 stationary                 # identical load every epoch
 ARC_CTRL="HPA-45-r0,HPA-45-r1,PredHPA-r1,ARC" ARC_TAG=_retry python run_antifragile.py 30 100 stationary
 python analyze.py                                           # tables.md + figures
+python analyze_prereg.py                                    # pre-registered scorecard (results/prereg_tables.md)
+# pre-registered runs: see experiments/PREREGISTRATION.md for the exact commands (seeds 300-339 / 400-429)
+# container testbed (needs Docker): cd ../testbed && python orchestrator.py && python analyze_testbed.py
 cd ../paper && python build_pdf.py                          # paper.pdf (needs Chromium)
 ```
 
